@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mazacote - Re</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0b0b0b;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: monospace;
+            color: #aaa;
+        }
+        #container {
+            text-align: center;
+            background: #1a1a1a;
+            padding: 40px 60px;
+            border-radius: 30px;
+            box-shadow: 0 0 40px rgba(0, 200, 255, 0.05);
+        }
+        canvas {
+            display: block;
+            margin: 20px auto;
+            border-radius: 20px;
+            background: #111;
+            cursor: pointer;
+            touch-action: none;
+        }
+        .info {
+            font-size: 14px;
+            letter-spacing: 2px;
+            color: #666;
+        }
+        .info span {
+            color: #8cf;
+        }
+        .estado {
+            margin-top: 12px;
+            font-size: 18px;
+            color: #4af;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <h2 style="font-weight:300; letter-spacing:4px;">◈ MAZACOTE · RE ◈</h2>
+    <canvas id="manoCanvas" width="400" height="200"></canvas>
+    <div class="info">
+        <span>⬆⬇</span> vertical = textura · <span>✋ abrir/cerrar</span> = volumen
+    </div>
+    <div class="estado" id="estadoTexto">⚪ silencio</div>
+</div>
+
+<script>
+    // ---------- AUDIO ----------
+    let audioCtx = null;
+    let osc1 = null, osc2 = null, osc3 = null;
+    let filter = null;
+    let gain = null;
+
+    const FREQ_RE = 293.66; // Re4
+
+    function iniciarAudio() {
+        if (audioCtx) return;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        // Ganancia principal (volumen)
+        gain = audioCtx.createGain();
+        gain.gain.value = 0;
+        gain.connect(audioCtx.destination);
+
+        // Filtro pasa bajos (textura)
+        filter = audioCtx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.value = 2000;
+        filter.Q.value = 1.5;
+        filter.connect(gain);
+
+        // 3 osciladores para textura rica (como Mazacote)
+        osc1 = audioCtx.createOscillator();
+        osc1.type = "sawtooth";
+        osc1.frequency.value = FREQ_RE;
+        osc1.connect(filter);
+
+        osc2 = audioCtx.createOscillator();
+        osc2.type = "triangle";
+        osc2.frequency.value = FREQ_RE * 2;
+        osc2.connect(filter);
+
+        osc3 = audioCtx.createOscillator();
+        osc3.type = "sine";
+        osc3.frequency.value = FREQ_RE * 3;
+        osc3.connect(filter);
+
+        osc1.start();
+        osc2.start();
+        osc3.start();
+    }
+
+    // ---------- CONTROL MANO (simulado con mouse en canvas) ----------
+    const canvas = document.getElementById('manoCanvas');
+    const ctx = canvas.getContext('2d');
+    const estado = document.getElementById('estadoTexto');
+
+    let x = 200;   // horizontal (no usado)
+    let y = 100;   // vertical → textura
+    let abierto = false; // true = sonido activo
+
+    // Dibujar mano simplificada
+    function dibujarMano(abierta, altura) {
+        ctx.clearRect(0, 0, 400, 200);
+        ctx.fillStyle = "#222";
+        ctx.fillRect(0, 0, 400, 200);
+
+        // Palma
+        ctx.fillStyle = abierta ? "#8cf" : "#555";
+        ctx.shadowColor = abierta ? "#8cf" : "#333";
+        ctx.shadowBlur = 30;
+        ctx.beginPath();
+        ctx.ellipse(200, 100 + (altura - 100) * 0.3, 60, 40, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Dedos (abiertos o cerrados)
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = abierta ? "#6af" : "#444";
+        const dedosY = abierta ? [30, 50, 70, 90] : [75, 80, 85, 90];
+        for (let i = 0; i < 4; i++) {
+            let dx = 150 + i * 35;
+            let dy = 100 + (altura - 100) * 0.3 + (abierta ? -20 : 10);
+            ctx.beginPath();
+            ctx.ellipse(dx, dy - 10, 12, abierta ? 25 : 8, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.shadowBlur = 0;
+        // Texto
+        ctx.fillStyle = "#888";
+        ctx.font = "12px monospace";
+        ctx.fillText("⬆ textura", 10, 30);
+        ctx.fillText("⬇ textura", 10, 190);
+        ctx.fillText(abierta ? "✋ ABIERTA" : "✊ CERRADA", 300, 30);
+    }
+
+    // Actualizar sonido según mano
+    function actualizarSonido() {
+        if (!audioCtx) return;
+
+        // Volumen: si está abierto → fade in, si cerrado → seco (0)
+        const targetGain = abierto ? 0.3 : 0.0;
+        // Cambio suave si está abierto, pero si se cierra → instantáneo (seco)
+        if (abierto) {
+            gain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.05);
+        } else {
+            gain.gain.setValueAtTime(0, audioCtx.currentTime); // seco
+        }
+
+        // Textura: filtro y modulación según altura (y)
+        // y = 0 (arriba) → filtro bajo, textura oscura
+        // y = 200 (abajo) → filtro alto, textura brillante
+        const normY = 1 - (y / 200); // 1 arriba, 0 abajo
+        const freqFiltro = 300 + normY * 1700; // 300 ~ 2000 Hz
+        filter.frequency.setTargetAtTime(freqFiltro, audioCtx.currentTime, 0.02);
+
+        // También modulamos un poco la frecuencia de los osciladores para textura
+        const desvio = (normY - 0.5) * 6; // ±3 Hz
+        osc1.frequency.setTargetAtTime(FREQ_RE + desvio, audioCtx.currentTime, 0.02);
+        osc2.frequency.setTargetAtTime(FREQ_RE * 2 + desvio * 1.5, audioCtx.currentTime, 0.02);
+        osc3.frequency.setTargetAtTime(FREQ_RE * 3 + desvio * 2, audioCtx.currentTime, 0.02);
+
+        // Mostrar estado
+        estado.textContent = abierto ? `🔊 sonando · filtro ${Math.round(freqFiltro)} Hz` : "🔇 silencio";
+        estado.style.color = abierto ? "#8cf" : "#555";
+    }
+
+    // ---------- EVENTOS (mouse / toque) ----------
+    function manejarMovimiento(e) {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+
+        let clientX, clientY;
+        if (e.touches) {
+            clientX = e.touches[0].clientX;
+            clientY = e.touches[0].clientY;
+        } else {
+            clientX = e.clientX;
+            clientY = e.clientY;
+        }
+
+        let canvasX = (clientX - rect.left) * scaleX;
+        let canvasY = (clientY - rect.top) * scaleY;
+
+        // Limitar
+        canvasX = Math.max(0, Math.min(400, canvasX));
+        canvasY = Math.max(0, Math.min(200, canvasY));
+
+        x = canvasX;
+        y = canvasY;
+
+        // Abierto o cerrado según posición horizontal (izq = cerrado, der = abierto)
+        abierto = (x > 200);
+
+        // Iniciar audio al primer toque
+        iniciarAudio();
+
+        dibujarMano(abierto, y);
+        actualizarSonido();
+    }
+
+    function manejarSalida() {
+        // Cuando sale el mouse, NO apagamos el sonido (dejamos que decida el usuario)
+        // Pero podemos poner en pausa opcional:
+        // abierto = false; actualizarSonido(); dibujarMano(abierto, y);
+    }
+
+    // Eventos
+    canvas.addEventListener('mousemove', manejarMovimiento);
+    canvas.addEventListener('mouseleave', manejarSalida);
+    canvas.addEventListener('touchmove', manejarMovimiento, { passive: false });
+    canvas.addEventListener('touchstart', manejarMovimiento, { passive: false });
+
+    // Dibujo inicial
+    dibujarMano(false, 100);
+</script>
+
+</body>
+</html>
