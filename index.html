@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-    <title>Mazacote · Re</title>
+    <title>Mazacote · Re · Resonador Espectral</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -93,7 +93,7 @@
     <canvas id="canvas"></canvas>
     
     <button id="startBtn">📷 INICIAR</button>
-    <div id="info"><span>✋ abrir</span> = sonido · <span>⬆⬇ altura</span> = volumen y textura</div>
+    <div id="info"><span>✋ abrir</span> = sonido · <span>⬆⬇ altura</span> = brillo</div>
     <div id="estado">⚪ esperando...</div>
     <div id="debug">mano: ---</div>
     <div id="warning">⚠️ MANO CERRADA → SILENCIO</div>
@@ -106,58 +106,9 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
 <script>
-// ==================== AUDIO ====================
-let audioCtx, osc1, osc2, osc3, filter, gain;
-let audioIniciado = false;
-const FREQ_RE = 293.66;
-
-function iniciarAudio() {
-    if (audioIniciado) return;
-    try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        
-        // Ganancia principal (VOLUMEN)
-        gain = audioCtx.createGain();
-        gain.gain.value = 0;
-        gain.connect(audioCtx.destination);
-
-        // Filtro pasa bajos (TEXTURA)
-        filter = audioCtx.createBiquadFilter();
-        filter.type = "lowpass";
-        filter.frequency.value = 1000;
-        filter.Q.value = 1.5;
-        filter.connect(gain);
-
-        // 3 osciladores
-        osc1 = audioCtx.createOscillator();
-        osc1.type = "sawtooth";
-        osc1.frequency.value = FREQ_RE;
-        osc1.connect(filter);
-
-        osc2 = audioCtx.createOscillator();
-        osc2.type = "triangle";
-        osc2.frequency.value = FREQ_RE * 2;
-        osc2.connect(filter);
-
-        osc3 = audioCtx.createOscillator();
-        osc3.type = "sine";
-        osc3.frequency.value = FREQ_RE * 3;
-        osc3.connect(filter);
-
-        osc1.start();
-        osc2.start();
-        osc3.start();
-
-        audioIniciado = true;
-        document.getElementById('startBtn').disabled = true;
-        document.getElementById('startBtn').textContent = '✅ ACTIVO';
-        document.getElementById('estado').textContent = '🔇 mano cerrada';
-    } catch(e) {
-        console.error("Error audio:", e);
-    }
-}
-
-// ==================== CONTROL ====================
+// ============================================================
+// 1. MOTOR GESTUAL (NO TOCAR) - Copiado exactamente del código que funciona
+// ============================================================
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -169,49 +120,266 @@ let manoAbierta = false;
 let alturaMano = 0.5;
 let smoothAltura = 0.5;
 
-function actualizarSonido() {
-    if (!audioIniciado || !audioCtx) return;
+// ============================================================
+// 2. MOTOR SONORO NUEVO - RESONADOR ESPECTRAL
+// ============================================================
+let audioCtx;
+let audioIniciado = false;
+const FREQ_RE = 293.66;
 
-    // Suavizado para evitar saltos bruscos
+// Nodos principales
+let masterGain;
+let lowpassFinal;
+let reverbGain;
+
+// Resonadores
+let resonadores = [];
+let lfosInternos = [];
+
+// Estado suavizado para el sonido
+let currentGain = 0;
+let targetGain = 0;
+let currentBrightness = 0.5;
+let targetBrightness = 0.5;
+
+function crearEspectro() {
+    // Creamos 32 parciales armónicos con amplitudes personalizadas
+    const real = new Float32Array(32);
+    const imag = new Float32Array(32);
+    
+    // Espectro tipo "cuerda metálica" con armónicos que decaen
+    for (let i = 0; i < 32; i++) {
+        const n = i + 1;
+        // Decaimiento exponencial con algunas resonancias
+        let amp = Math.exp(-n * 0.15) * (0.8 + Math.random() * 0.4);
+        // Picos en armónicos específicos (como un instrumento real)
+        if (n === 3 || n === 5 || n === 7 || n === 11) {
+            amp *= 1.5;
+        }
+        if (n === 2 || n === 4 || n === 8) {
+            amp *= 0.7;
+        }
+        real[i] = amp * 0.5;
+        imag[i] = 0;
+    }
+    return { real, imag };
+}
+
+function crearResonador(frecuencia, amplitud) {
+    // Cada resonador es un filtro bandpass con alta Q + oscilador
+    const osc = audioCtx.createOscillator();
+    
+    // Usamos PeriodicWave para un timbre complejo
+    const { real, imag } = crearEspectro();
+    const wave = audioCtx.createPeriodicWave(real, imag);
+    osc.setPeriodicWave(wave);
+    osc.frequency.value = frecuencia;
+    
+    // Ganancia individual
+    const gainNode = audioCtx.createGain();
+    gainNode.gain.value = amplitud;
+    
+    // Filtro bandpass para darle "cuerpo" al resonador
+    const bp = audioCtx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = frecuencia;
+    bp.Q.value = 4 + Math.random() * 3;
+    
+    osc.connect(gainNode);
+    gainNode.connect(bp);
+    
+    osc.start();
+    
+    return { osc, gain: gainNode, filter: bp, baseFreq: frecuencia };
+}
+
+function iniciarAudio() {
+    if (audioIniciado) return;
+    try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        // ========== MASTER ==========
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = 0;
+        masterGain.connect(audioCtx.destination);
+
+        // ========== FILTRO FINAL ==========
+        lowpassFinal = audioCtx.createBiquadFilter();
+        lowpassFinal.type = "lowpass";
+        lowpassFinal.frequency.value = 3000;
+        lowpassFinal.Q.value = 0.7;
+        lowpassFinal.connect(masterGain);
+
+        // ========== REVERB ==========
+        const reverb = audioCtx.createConvolver();
+        const impulseLength = audioCtx.sampleRate * 8;
+        const impulseBuffer = audioCtx.createBuffer(2, impulseLength, audioCtx.sampleRate);
+        for (let channel = 0; channel < 2; channel++) {
+            const data = impulseBuffer.getChannelData(channel);
+            let brown = 0;
+            for (let i = 0; i < impulseLength; i++) {
+                brown += (Math.random() * 2 - 1) * 0.02;
+                brown = Math.max(-1, Math.min(1, brown));
+                const envelope = Math.exp(-i / (audioCtx.sampleRate * 2.0));
+                const shimmer = Math.sin(i / audioCtx.sampleRate * 300) * 0.04;
+                data[i] = brown * envelope * 0.4 + shimmer * envelope * 0.08;
+            }
+        }
+        reverb.buffer = impulseBuffer;
+        reverbGain = audioCtx.createGain();
+        reverbGain.gain.value = 0.18;
+        reverb.connect(reverbGain);
+        reverbGain.connect(lowpassFinal);
+
+        // ========== CHORUS ==========
+        const chorus = audioCtx.createDelay(0.05);
+        chorus.delayTime.value = 0.02;
+        const chorusLFO = audioCtx.createOscillator();
+        chorusLFO.frequency.value = 0.035;
+        const chorusDepth = audioCtx.createGain();
+        chorusDepth.gain.value = 0.006;
+        chorusLFO.connect(chorusDepth);
+        chorusDepth.connect(chorus.delayTime);
+        chorusLFO.start();
+        chorus.connect(lowpassFinal);
+
+        // ========== 8 RESONADORES ==========
+        // Frecuencias con microdesafinación
+        const freqs = [
+            FREQ_RE + 0.0,
+            FREQ_RE * 2 - 0.8,
+            FREQ_RE * 3 + 0.5,
+            FREQ_RE * 4 - 1.2,
+            FREQ_RE * 5 + 0.7,
+            FREQ_RE * 6 - 0.4,
+            FREQ_RE * 7 + 1.1,
+            FREQ_RE * 8 - 0.6
+        ];
+        
+        const amplitudes = [0.25, 0.18, 0.14, 0.10, 0.07, 0.05, 0.03, 0.02];
+        
+        for (let i = 0; i < 8; i++) {
+            const res = crearResonador(freqs[i], amplitudes[i]);
+            
+            // Conectar a chorus y reverb
+            res.filter.connect(chorus);
+            res.filter.connect(reverb);
+            
+            // LFO interno para microdesafinación (vida propia)
+            const lfo = audioCtx.createOscillator();
+            lfo.frequency.value = 0.02 + Math.random() * 0.04;
+            const lfoGain = audioCtx.createGain();
+            lfoGain.gain.value = 0.3 + Math.random() * 0.6;
+            lfo.connect(lfoGain);
+            lfoGain.connect(res.osc.frequency);
+            lfo.start();
+            
+            resonadores.push(res);
+            lfosInternos.push({ lfo, gain: lfoGain });
+        }
+
+        // ========== RUIDO FILTRADO (aire) ==========
+        const noiseBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 4, audioCtx.sampleRate);
+        const noiseData = noiseBuffer.getChannelData(0);
+        let brown = 0;
+        for (let i = 0; i < noiseData.length; i++) {
+            brown += (Math.random() * 2 - 1) * 0.015;
+            brown = Math.max(-1, Math.min(1, brown));
+            noiseData[i] = brown * 0.3;
+        }
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = noiseBuffer;
+        noise.loop = true;
+        
+        const noiseBP = audioCtx.createBiquadFilter();
+        noiseBP.type = "bandpass";
+        noiseBP.frequency.value = 300;
+        noiseBP.Q.value = 0.4;
+        
+        const noiseGain = audioCtx.createGain();
+        noiseGain.gain.value = 0.04;
+        
+        noise.connect(noiseBP);
+        noiseBP.connect(noiseGain);
+        noiseGain.connect(chorus);
+        noiseGain.connect(reverb);
+        noise.start();
+
+        audioIniciado = true;
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('startBtn').textContent = '✅ ACTIVO';
+        document.getElementById('estado').textContent = '🔇 mano cerrada';
+        warningEl.style.display = 'block';
+        
+        audioLoop();
+    } catch(e) {
+        console.error("Error audio:", e);
+    }
+}
+
+// ========== LOOP DE AUDIO ==========
+function audioLoop() {
+    if (!audioIniciado) return;
+
+    // Suavizado de la mano (NO TOCAR)
     smoothAltura += (alturaMano - smoothAltura) * 0.15;
 
-    // ⚠️ CRUCIAL: Si la mano está CERRADA → SILENCIO SECO (setValueAtTime 0)
+    // ========== CONTROL DE AMPLITUD (desde la mano) ==========
     if (!manoAbierta) {
-        gain.gain.setValueAtTime(0, audioCtx.currentTime);
+        // Mano cerrada → SILENCIO SECO
+        masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
         estadoEl.textContent = '🔇 silencio (mano cerrada)';
         estadoEl.style.color = '#555';
         warningEl.style.display = 'block';
+        requestAnimationFrame(audioLoop);
         return;
     }
 
-    // Si la mano está ABIERTA → volumen controlado por altura
     warningEl.style.display = 'none';
-    
-    // DINÁMICA: Mano arriba = piano, mano abajo = forte
-    // altura 0 (arriba) = 0.05, altura 1 (abajo) = 0.35
-    const volumen = 0.05 + (1 - smoothAltura) * 0.30;
-    gain.gain.setTargetAtTime(volumen, audioCtx.currentTime, 0.03);
 
-    // TEXTURA: filtro según altura
-    const freqFiltro = 150 + (1 - smoothAltura) * 2000;
-    filter.frequency.setTargetAtTime(freqFiltro, audioCtx.currentTime, 0.02);
+    // Mano abierta → volumen controlado por altura
+    // altura 0 (arriba) = 0.02, altura 1 (abajo) = 0.30
+    const volumen = 0.02 + (1 - smoothAltura) * 0.28;
+    masterGain.gain.setTargetAtTime(volumen, audioCtx.currentTime, 0.03);
 
-    // Modulación de frecuencia para textura
-    const desvio = (0.5 - smoothAltura) * 12;
-    osc1.frequency.setTargetAtTime(FREQ_RE + desvio, audioCtx.currentTime, 0.02);
-    osc2.frequency.setTargetAtTime(FREQ_RE * 2 + desvio * 1.5, audioCtx.currentTime, 0.02);
-    osc3.frequency.setTargetAtTime(FREQ_RE * 3 + desvio * 2, audioCtx.currentTime, 0.02);
+    // ========== BRILLO (filtro final) ==========
+    // Mano arriba = oscuro, mano abajo = brillante
+    const freqFinal = 400 + (1 - smoothAltura) * 3000;
+    lowpassFinal.frequency.setTargetAtTime(freqFinal, audioCtx.currentTime, 0.02);
 
-    // Q del filtro
-    filter.Q.setTargetAtTime(1.2 + (1 - smoothAltura) * 1.5, audioCtx.currentTime, 0.02);
+    // ========== RESONADORES: microdesafinación por altura ==========
+    const desvioGlobal = (0.5 - smoothAltura) * 0.8;
+    for (let i = 0; i < resonadores.length; i++) {
+        const freqBase = resonadores[i].baseFreq;
+        // Desafinación suave
+        resonadores[i].osc.frequency.setTargetAtTime(
+            freqBase + desvioGlobal * (0.5 + i * 0.1),
+            audioCtx.currentTime,
+            0.05
+        );
+        // Q de los filtros bandpass
+        const qBase = 4 + i * 0.5;
+        resonadores[i].filter.Q.setTargetAtTime(
+            qBase + (1 - smoothAltura) * 2,
+            audioCtx.currentTime,
+            0.05
+        );
+    }
 
-    // UI
-    const db = Math.round((volumen / 0.35) * 100);
-    estadoEl.textContent = `🔊 sonando · ${db}% · filtro ${Math.round(freqFiltro)} Hz`;
+    // ========== REVERB ==========
+    reverbGain.gain.setTargetAtTime(0.12 + (1 - smoothAltura) * 0.15, audioCtx.currentTime, 0.03);
+
+    // ========== UI ==========
+    const db = Math.round((volumen / 0.30) * 100);
+    estadoEl.textContent = `🔊 sonando · ${db}% · ${Math.round(freqFinal)}Hz`;
     estadoEl.style.color = '#6cf';
+
+    requestAnimationFrame(audioLoop);
 }
 
-// ==================== MEDIAPIPE ====================
+// ============================================================
+// 3. MEDIAPIPE (NO TOCAR - exactamente igual)
+// ============================================================
 function onResults(results) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
@@ -221,7 +389,7 @@ function onResults(results) {
         drawConnectors(ctx, landmarks);
         drawLandmarks(ctx, landmarks);
 
-        // Detectar mano abierta/cerrada (distancia dedos-palma)
+        // Detectar mano abierta/cerrada
         const fingerTips = [8, 12, 16, 20];
         const mcp = [5, 9, 13, 17];
         let sumaDistancias = 0;
@@ -232,8 +400,6 @@ function onResults(results) {
             sumaDistancias += dist;
         }
         const promedio = sumaDistancias / fingerTips.length;
-        
-        // Umbral para abrir/cerrar
         const umbral = 0.055;
         manoAbierta = promedio > umbral;
 
@@ -243,12 +409,10 @@ function onResults(results) {
         alturaMano = Math.max(0, Math.min(1, (minY + maxY) / 2));
 
         debugEl.textContent = `abierta: ${manoAbierta} · altura: ${(alturaMano * 100).toFixed(0)}%`;
-
-        actualizarSonido();
     } else {
-        // No hay mano → SILENCIO SECO
+        // No hay mano → silencio SECO
         if (audioIniciado) {
-            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
             estadoEl.textContent = '🚫 mano no detectada';
             estadoEl.style.color = '#333';
             warningEl.style.display = 'block';
@@ -291,7 +455,9 @@ function drawLandmarks(ctx, landmarks) {
     ctx.shadowBlur = 0;
 }
 
-// ==================== CÁMARA ====================
+// ============================================================
+// 4. CÁMARA Y BOTÓN (NO TOCAR)
+// ============================================================
 const hands = new Hands({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
 });
@@ -311,7 +477,6 @@ const camera = new Camera(video, {
     height: 480
 });
 
-// ==================== BOTÓN ====================
 document.getElementById('startBtn').addEventListener('click', async () => {
     try {
         await camera.start();
