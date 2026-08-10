@@ -2,8 +2,8 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mazacote - Re</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Mazacote · Re · Mano</title>
     <style>
         * {
             margin: 0;
@@ -11,75 +11,111 @@
             box-sizing: border-box;
         }
         body {
-            background: #0b0b0b;
+            background: #0a0a0a;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             font-family: monospace;
             color: #aaa;
+            overflow: hidden;
         }
         #container {
-            text-align: center;
-            background: #1a1a1a;
-            padding: 40px 60px;
-            border-radius: 30px;
-            box-shadow: 0 0 40px rgba(0, 200, 255, 0.05);
-        }
-        canvas {
-            display: block;
-            margin: 20px auto;
-            border-radius: 20px;
+            position: relative;
+            width: 100%;
+            max-width: 480px;
             background: #111;
-            cursor: pointer;
-            touch-action: none;
+            border-radius: 30px;
+            padding: 20px;
+            box-shadow: 0 0 60px rgba(0, 200, 255, 0.05);
+        }
+        #video {
+            width: 100%;
+            border-radius: 20px;
+            transform: scaleX(-1);
+            background: #000;
+            display: block;
+        }
+        #canvas {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: calc(100% - 40px);
+            height: calc(100% - 40px);
+            transform: scaleX(-1);
+            border-radius: 20px;
+            pointer-events: none;
         }
         .info {
-            font-size: 14px;
+            text-align: center;
+            margin-top: 15px;
+            font-size: 13px;
             letter-spacing: 2px;
-            color: #666;
+            color: #555;
         }
         .info span {
-            color: #8cf;
+            color: #6cf;
         }
-        .estado {
-            margin-top: 12px;
-            font-size: 18px;
+        #estado {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 16px;
             color: #4af;
+            letter-spacing: 1px;
         }
         #startBtn {
+            display: block;
+            margin: 15px auto 5px;
             background: #2a4a6a;
             border: none;
             color: white;
-            padding: 12px 30px;
-            border-radius: 30px;
+            padding: 14px 40px;
+            border-radius: 40px;
             font-size: 16px;
             cursor: pointer;
-            margin-bottom: 15px;
             font-family: monospace;
-            letter-spacing: 2px;
+            letter-spacing: 3px;
             transition: 0.3s;
+            width: 100%;
         }
         #startBtn:hover {
-            background: #3a6a9a;
-            box-shadow: 0 0 20px rgba(0, 150, 255, 0.3);
+            background: #3a7aaa;
+            box-shadow: 0 0 30px rgba(0, 150, 255, 0.2);
+        }
+        #startBtn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        .debug {
+            text-align: center;
+            font-size: 11px;
+            color: #333;
+            margin-top: 8px;
         }
     </style>
 </head>
 <body>
 
 <div id="container">
-    <h2 style="font-weight:300; letter-spacing:4px;">◈ MAZACOTE · RE ◈</h2>
-    <button id="startBtn">▶ INICIAR AUDIO</button>
-    <canvas id="manoCanvas" width="400" height="200"></canvas>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    
+    <button id="startBtn">📷 INICIAR CÁMARA Y AUDIO</button>
     <div class="info">
-        <span>⬆⬇</span> vertical = textura · <span>✋ izquierda/derecha</span> = volumen
+        <span>✋ abrir/cerrar</span> = volumen · <span>⬆⬇ altura</span> = textura
     </div>
-    <div class="estado" id="estadoTexto">⚪ esperando inicio...</div>
+    <div id="estado">⚪ esperando...</div>
+    <div class="debug" id="debugInfo">mano: ---</div>
 </div>
 
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
 <script>
-    // ---------- AUDIO ----------
+    // ==================== AUDIO ====================
     let audioCtx = null;
     let osc1 = null, osc2 = null, osc3 = null;
     let filter = null;
@@ -90,205 +126,221 @@
 
     function iniciarAudio() {
         if (audioIniciado) return;
-        
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            gain = audioCtx.createGain();
+            gain.gain.value = 0;
+            gain.connect(audioCtx.destination);
 
-        // Ganancia principal (volumen)
-        gain = audioCtx.createGain();
-        gain.gain.value = 0;
-        gain.connect(audioCtx.destination);
+            filter = audioCtx.createBiquadFilter();
+            filter.type = "lowpass";
+            filter.frequency.value = 1000;
+            filter.Q.value = 2;
+            filter.connect(gain);
 
-        // Filtro pasa bajos (textura)
-        filter = audioCtx.createBiquadFilter();
-        filter.type = "lowpass";
-        filter.frequency.value = 1000;
-        filter.Q.value = 1.5;
-        filter.connect(gain);
+            osc1 = audioCtx.createOscillator();
+            osc1.type = "sawtooth";
+            osc1.frequency.value = FREQ_RE;
+            osc1.connect(filter);
 
-        // 3 osciladores para textura rica (como Mazacote)
-        osc1 = audioCtx.createOscillator();
-        osc1.type = "sawtooth";
-        osc1.frequency.value = FREQ_RE;
-        osc1.connect(filter);
+            osc2 = audioCtx.createOscillator();
+            osc2.type = "triangle";
+            osc2.frequency.value = FREQ_RE * 2;
+            osc2.connect(filter);
 
-        osc2 = audioCtx.createOscillator();
-        osc2.type = "triangle";
-        osc2.frequency.value = FREQ_RE * 2;
-        osc2.connect(filter);
+            osc3 = audioCtx.createOscillator();
+            osc3.type = "sine";
+            osc3.frequency.value = FREQ_RE * 3;
+            osc3.connect(filter);
 
-        osc3 = audioCtx.createOscillator();
-        osc3.type = "sine";
-        osc3.frequency.value = FREQ_RE * 3;
-        osc3.connect(filter);
+            osc1.start();
+            osc2.start();
+            osc3.start();
 
-        osc1.start();
-        osc2.start();
-        osc3.start();
-
-        audioIniciado = true;
-        document.getElementById('startBtn').style.display = 'none';
-        document.getElementById('estadoTexto').textContent = '⚪ silencio (mano cerrada)';
-    }
-
-    // ---------- CONTROL MANO (simulado con mouse en canvas) ----------
-    const canvas = document.getElementById('manoCanvas');
-    const ctx = canvas.getContext('2d');
-    const estado = document.getElementById('estadoTexto');
-
-    let x = 100;   // horizontal → abierto/cerrado
-    let y = 100;   // vertical → textura
-    let abierto = false;
-
-    // Dibujar mano simplificada
-    function dibujarMano(abierta, altura) {
-        ctx.clearRect(0, 0, 400, 200);
-        ctx.fillStyle = "#222";
-        ctx.fillRect(0, 0, 400, 200);
-
-        // Línea divisoria (mitad izquierda = cerrado, derecha = abierto)
-        ctx.strokeStyle = "#333";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([5, 5]);
-        ctx.beginPath();
-        ctx.moveTo(200, 0);
-        ctx.lineTo(200, 200);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        
-        ctx.fillStyle = "#444";
-        ctx.font = "10px monospace";
-        ctx.fillText("CERRADO", 60, 190);
-        ctx.fillText("ABIERTO", 280, 190);
-
-        // Palma
-        ctx.fillStyle = abierta ? "#6cf" : "#555";
-        ctx.shadowColor = abierta ? "#6cf" : "#333";
-        ctx.shadowBlur = 30;
-        ctx.beginPath();
-        ctx.ellipse(200, 100 + (altura - 100) * 0.2, 60, 40, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Dedos
-        ctx.shadowBlur = 10;
-        ctx.fillStyle = abierta ? "#4af" : "#444";
-        for (let i = 0; i < 4; i++) {
-            let dx = 145 + i * 35;
-            let dy = 100 + (altura - 100) * 0.2;
-            ctx.beginPath();
-            if (abierta) {
-                // Dedos extendidos
-                ctx.ellipse(dx, dy - 30 - i * 4, 10, 25 + i * 2, 0.2, 0, Math.PI * 2);
-            } else {
-                // Dedos cerrados (puño)
-                ctx.ellipse(dx, dy + 8, 10, 12, 0, 0, Math.PI * 2);
-            }
-            ctx.fill();
+            audioIniciado = true;
+            document.getElementById('estado').textContent = '🔇 mano cerrada';
+            document.getElementById('estado').style.color = '#555';
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('startBtn').textContent = '✅ AUDIO ACTIVO';
+        } catch(e) {
+            console.error("Error audio:", e);
         }
-
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = "#888";
-        ctx.font = "11px monospace";
-        ctx.fillText("⬆ textura oscura", 10, 20);
-        ctx.fillText("⬇ textura brillante", 10, 195);
-        
-        // Indicador de posición
-        ctx.fillStyle = abierta ? "#6cf" : "#555";
-        ctx.beginPath();
-        ctx.arc(x, y, 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#fff";
-        ctx.font = "8px monospace";
-        ctx.fillText("●", x-3, y+3);
     }
 
-    // Actualizar sonido
+    // ==================== CONTROL CON MANO ====================
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const estadoEl = document.getElementById('estado');
+    const debugEl = document.getElementById('debugInfo');
+
+    let manoAbierta = false;
+    let alturaMano = 0.5; // 0 = arriba, 1 = abajo
+    let xMano = 0.5; // 0 = izquierda, 1 = derecha
+
     function actualizarSonido() {
         if (!audioIniciado || !audioCtx) return;
 
-        // Volumen: abierto = 0.3, cerrado = 0 (seco)
-        const targetGain = abierto ? 0.3 : 0.0;
-        if (abierto) {
-            gain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.05);
+        // Volumen: abierto = 0.25, cerrado = 0 (seco)
+        const targetGain = manoAbierta ? 0.25 : 0.0;
+        if (manoAbierta) {
+            gain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.03);
         } else {
-            gain.gain.setValueAtTime(0, audioCtx.currentTime); // seco
+            gain.gain.setValueAtTime(0, audioCtx.currentTime);
         }
 
-        // Textura: filtro según altura (y)
-        const normY = 1 - (y / 200);
-        const freqFiltro = 200 + normY * 1800; // 200 ~ 2000 Hz
+        // Textura: filtro según altura (0 = arriba = oscuro, 1 = abajo = brillante)
+        const freqFiltro = 200 + (1 - alturaMano) * 1800;
         filter.frequency.setTargetAtTime(freqFiltro, audioCtx.currentTime, 0.02);
 
         // Pequeña modulación de frecuencia para textura
-        const desvio = (normY - 0.5) * 8;
+        const desvio = (0.5 - alturaMano) * 10;
         osc1.frequency.setTargetAtTime(FREQ_RE + desvio, audioCtx.currentTime, 0.02);
         osc2.frequency.setTargetAtTime(FREQ_RE * 2 + desvio * 1.5, audioCtx.currentTime, 0.02);
         osc3.frequency.setTargetAtTime(FREQ_RE * 3 + desvio * 2, audioCtx.currentTime, 0.02);
 
-        // Mostrar estado
-        if (abierto) {
-            estado.textContent = `🔊 sonando · filtro ${Math.round(freqFiltro)} Hz`;
-            estado.style.color = "#6cf";
+        // Actualizar UI
+        if (manoAbierta) {
+            estadoEl.textContent = `🔊 sonando · filtro ${Math.round(freqFiltro)} Hz`;
+            estadoEl.style.color = '#6cf';
         } else {
-            estado.textContent = "🔇 silencio (mano cerrada)";
-            estado.style.color = "#555";
+            estadoEl.textContent = '🔇 silencio (mano cerrada)';
+            estadoEl.style.color = '#555';
         }
     }
 
-    // ---------- EVENTOS ----------
-    function manejarMovimiento(e) {
-        e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
+    // ==================== MEDIAPIPE HANDS ====================
+    function onResults(results) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const landmarks = results.multiHandLandmarks[0];
+            
+            // Dibujar puntos y conexiones
+            drawConnectors(ctx, landmarks);
+            drawLandmarks(ctx, landmarks);
 
-        let clientX, clientY;
-        if (e.touches) {
-            clientX = e.touches[0].clientX;
-            clientY = e.touches[0].clientY;
-        } else {
-            clientX = e.clientX;
-            clientY = e.clientY;
-        }
+            // Calcular si la mano está abierta o cerrada
+            // Usamos distancia entre puntas de dedos y base de palma
+            const palmBase = landmarks[0]; // Muñeca
+            const fingerTips = [8, 12, 16, 20]; // Índice, medio, anular, meñique
+            const mcp = [5, 9, 13, 17]; // Base de los dedos
+            
+            let sumaDistancias = 0;
+            for (let i = 0; i < fingerTips.length; i++) {
+                const tip = landmarks[fingerTips[i]];
+                const base = landmarks[mcp[i]];
+                const dist = Math.hypot(tip.x - base.x, tip.y - base.y, tip.z - base.z);
+                sumaDistancias += dist;
+            }
+            const promedio = sumaDistancias / fingerTips.length;
+            
+            // Umbral para considerar abierta
+            manoAbierta = promedio > 0.06;
 
-        let canvasX = (clientX - rect.left) * scaleX;
-        let canvasY = (clientY - rect.top) * scaleY;
+            // Altura de la mano (normalizada)
+            const minY = Math.min(...landmarks.map(l => l.y));
+            const maxY = Math.max(...landmarks.map(l => l.y));
+            alturaMano = Math.max(0, Math.min(1, (minY + maxY) / 2));
 
-        canvasX = Math.max(0, Math.min(400, canvasX));
-        canvasY = Math.max(0, Math.min(200, canvasY));
+            // Posición horizontal (para debug)
+            xMano = landmarks[0].x;
 
-        x = canvasX;
-        y = canvasY;
+            // Debug
+            debugEl.textContent = `abierta: ${manoAbierta} · altura: ${(alturaMano * 100).toFixed(0)}%`;
 
-        // Abierto si está en la mitad derecha del canvas
-        abierto = (x > 200);
-
-        if (audioIniciado) {
-            dibujarMano(abierto, y);
+            // Actualizar audio
             actualizarSonido();
         } else {
-            dibujarMano(abierto, y);
+            // No hay mano detectada → silencio seco
+            if (audioIniciado) {
+                gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                estadoEl.textContent = '🚫 mano no detectada';
+                estadoEl.style.color = '#333';
+            }
+            debugEl.textContent = 'mano: ---';
         }
     }
 
-    // Botón de inicio
-    document.getElementById('startBtn').addEventListener('click', () => {
-        iniciarAudio();
-        // Mostrar estado inicial
-        dibujarMano(false, 100);
-        estado.textContent = '⚪ silencio (mano cerrada)';
-        estado.style.color = "#555";
+    // Funciones de dibujo de MediaPipe
+    function drawConnectors(ctx, landmarks) {
+        const connections = [
+            [0,1],[1,2],[2,3],[3,4], // pulgar
+            [0,5],[5,6],[6,7],[7,8], // índice
+            [0,9],[9,10],[10,11],[11,12], // medio
+            [0,13],[13,14],[14,15],[15,16], // anular
+            [0,17],[17,18],[18,19],[19,20], // meñique
+            [5,9],[9,13],[13,17] // palma
+        ];
+        ctx.strokeStyle = '#6cf';
+        ctx.lineWidth = 2;
+        connections.forEach(([i, j]) => {
+            const p1 = landmarks[i];
+            const p2 = landmarks[j];
+            ctx.beginPath();
+            ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height);
+            ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
+            ctx.stroke();
+        });
+    }
+
+    function drawLandmarks(ctx, landmarks) {
+        ctx.fillStyle = '#8cf';
+        landmarks.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x * canvas.width, p.y * canvas.height, 4, 0, 2 * Math.PI);
+            ctx.fill();
+        });
+    }
+
+    // ==================== INICIALIZAR CÁMARA ====================
+    const hands = new Hands({
+        locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }
     });
 
-    // Eventos del canvas
-    canvas.addEventListener('mousemove', manejarMovimiento);
-    canvas.addEventListener('mouseleave', () => {
-        // No apagar, dejar que el usuario decida
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.6
     });
-    canvas.addEventListener('touchmove', manejarMovimiento, { passive: false });
-    canvas.addEventListener('touchstart', manejarMovimiento, { passive: false });
 
-    // Dibujo inicial
-    dibujarMano(false, 100);
+    hands.onResults(onResults);
+
+    const camera = new Camera(video, {
+        onFrame: async () => {
+            await hands.send({image: video});
+        },
+        width: 640,
+        height: 480
+    });
+
+    // ==================== BOTÓN INICIO ====================
+    document.getElementById('startBtn').addEventListener('click', async () => {
+        try {
+            await camera.start();
+            iniciarAudio();
+            document.getElementById('startBtn').textContent = '📷 CÁMARA ACTIVA';
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('estado').textContent = '🔇 mano cerrada';
+            
+            // Ajustar canvas al tamaño del video
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+        } catch(e) {
+            console.error("Error cámara:", e);
+            alert('No se pudo acceder a la cámara. Permite el acceso e intenta de nuevo.');
+        }
+    });
+
+    // Ajustar canvas cuando el video cargue
+    video.addEventListener('loadedmetadata', () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+    });
 </script>
 
 </body>
