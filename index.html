@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-    <title>Mazacote · Re</title>
+    <title>Mazacote · Re · Espectral</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -22,6 +22,7 @@
             background: #111;
             border-radius: 30px;
             padding: 20px;
+            box-shadow: 0 0 60px rgba(100,200,255,0.03);
         }
         #video {
             width: 100%;
@@ -43,37 +44,39 @@
         #info {
             text-align: center;
             margin-top: 12px;
-            font-size: 13px;
-            color: #555;
+            font-size: 11px;
+            color: #444;
             letter-spacing: 1px;
         }
         #info span { color: #6cf; }
         #estado {
             text-align: center;
             margin-top: 8px;
-            font-size: 15px;
+            font-size: 13px;
             color: #4af;
+            letter-spacing: 1px;
         }
         #startBtn {
             display: block;
             margin: 12px auto 5px;
-            background: #2a4a6a;
-            border: none;
-            color: white;
+            background: #1a2a3a;
+            border: 1px solid #2a4a6a;
+            color: #8af;
             padding: 14px;
             border-radius: 40px;
-            font-size: 16px;
+            font-size: 14px;
             cursor: pointer;
             font-family: monospace;
             letter-spacing: 2px;
             width: 100%;
+            transition: 0.5s;
         }
-        #startBtn:hover { background: #3a7aaa; }
-        #startBtn:disabled { opacity: 0.3; cursor: not-allowed; }
+        #startBtn:hover { background: #2a4a6a; border-color: #4a8aaa; }
+        #startBtn:disabled { opacity: 0.2; cursor: not-allowed; }
         #debug {
             text-align: center;
-            font-size: 11px;
-            color: #333;
+            font-size: 10px;
+            color: #222;
             margin-top: 5px;
         }
     </style>
@@ -84,9 +87,9 @@
     <video id="video" autoplay playsinline></video>
     <canvas id="canvas"></canvas>
     
-    <button id="startBtn">📷 INICIAR</button>
-    <div id="info"><span>✋ abrir</span> = sonido · <span>⬆⬇ altura</span> = textura y dinámica</div>
-    <div id="estado">⚪ esperando...</div>
+    <button id="startBtn">◈ INICIAR · MAZACOTE ◈</button>
+    <div id="info"><span>✋ pulgar-índice</span> = intensidad · <span>⬆⬇</span> = brillo</div>
+    <div id="estado">◈ esperando... ◈</div>
     <div id="debug">mano: ---</div>
 </div>
 
@@ -98,118 +101,315 @@
 
 <script>
 // ==================== AUDIO ====================
-let audioCtx, osc1, osc2, osc3, filter, gain, analizador;
+let audioCtx;
 let audioIniciado = false;
 const FREQ_RE = 293.66;
+
+// ========== PARÁMETROS MAZACOTE ==========
+const FADE_TIME = 0.003;
+const TIMBRE_TIME = 0.005;
+
+let currentGain = 0;
+let targetGain = 0;
+let currentBrightness = 0.5;
+let targetBrightness = 0.5;
+
+// Nodos principales
+let masterGain, lowpassFinal, reverb, reverbGain;
+let delay, chorus;
+let allpass1, allpass2;
+let waveShaper;
+
+// 8 osciladores con modulación
+let osciladores = [];
+let moduladores = [];
+
+function createPinkNoiseBuffer(length) {
+    const buffer = audioCtx.createBuffer(2, length, audioCtx.sampleRate);
+    for (let channel = 0; channel < 2; channel++) {
+        const data = buffer.getChannelData(channel);
+        let b0 = 0, b1 = 0, b2 = 0;
+        for (let i = 0; i < length; i++) {
+            const white = Math.random() * 2 - 1;
+            b0 = 0.99886 * b0 + white * 0.0555179;
+            b1 = 0.99332 * b1 + white * 0.0750759;
+            b2 = 0.96900 * b2 + white * 0.1538520;
+            const b3 = 0.86650 * b3 + white * 0.3104856;
+            const b4 = 0.55000 * b4 + white * 0.5329522;
+            const b5 = -0.7616 * b5 - white * 0.0168980;
+            data[i] = b0 + b1 + b2 + b3 + b4 + b5;
+            data[i] *= 0.11;
+        }
+    }
+    return buffer;
+}
 
 function iniciarAudio() {
     if (audioIniciado) return;
     try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         
-        // Ganancia principal (VOLUMEN)
-        gain = audioCtx.createGain();
-        gain.gain.value = 0;
-        gain.connect(audioCtx.destination);
+        // ========== 1. MASTER ==========
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = 0;
+        masterGain.connect(audioCtx.destination);
 
-        // Filtro pasa bajos (TEXTURA)
-        filter = audioCtx.createBiquadFilter();
-        filter.type = "lowpass";
-        filter.frequency.value = 1000;
-        filter.Q.value = 1.5;
-        filter.connect(gain);
+        // ========== 2. LOWPASS FINAL ==========
+        lowpassFinal = audioCtx.createBiquadFilter();
+        lowpassFinal.type = "lowpass";
+        lowpassFinal.frequency.value = 3000;
+        lowpassFinal.Q.value = 0.7;
+        lowpassFinal.connect(masterGain);
 
-        // 3 osciladores
-        osc1 = audioCtx.createOscillator();
-        osc1.type = "sawtooth";
-        osc1.frequency.value = FREQ_RE;
-        osc1.connect(filter);
+        // ========== 3. DELAY DIFUSO ==========
+        delay = audioCtx.createDelay(0.5);
+        delay.delayTime.value = 0.07;
+        
+        const delayFeedback = audioCtx.createGain();
+        delayFeedback.gain.value = 0.15;
+        
+        const delayLP = audioCtx.createBiquadFilter();
+        delayLP.type = "lowpass";
+        delayLP.frequency.value = 600;
+        
+        delay.connect(delayFeedback);
+        delayFeedback.connect(delayLP);
+        delayLP.connect(delay);
+        delay.connect(lowpassFinal);
 
-        osc2 = audioCtx.createOscillator();
-        osc2.type = "triangle";
-        osc2.frequency.value = FREQ_RE * 2;
-        osc2.connect(filter);
+        // ========== 4. CHORUS ==========
+        chorus = audioCtx.createDelay(0.05);
+        chorus.delayTime.value = 0.022;
+        
+        const chorusLFO = audioCtx.createOscillator();
+        chorusLFO.frequency.value = 0.04;
+        const chorusDepth = audioCtx.createGain();
+        chorusDepth.gain.value = 0.006;
+        chorusLFO.connect(chorusDepth);
+        chorusDepth.connect(chorus.delayTime);
+        chorusLFO.start();
 
-        osc3 = audioCtx.createOscillator();
-        osc3.type = "sine";
-        osc3.frequency.value = FREQ_RE * 3;
-        osc3.connect(filter);
+        // ========== 5. ALLPASS FILTERS (difusión) ==========
+        allpass1 = audioCtx.createBiquadFilter();
+        allpass1.type = "allpass";
+        allpass1.frequency.value = 800;
+        allpass1.Q.value = 0.5;
 
-        osc1.start();
-        osc2.start();
-        osc3.start();
+        allpass2 = audioCtx.createBiquadFilter();
+        allpass2.type = "allpass";
+        allpass2.frequency.value = 1600;
+        allpass2.Q.value = 0.3;
+
+        allpass1.connect(allpass2);
+
+        // ========== 6. WAVESHAPER (saturación suave) ==========
+        waveShaper = audioCtx.createWaveShaper();
+        const curve = new Float32Array(512);
+        for (let i = 0; i < 512; i++) {
+            const x = (i - 256) / 256;
+            // Saturación suave tipo tube
+            curve[i] = Math.tanh(x * 1.6) / 1.3;
+        }
+        waveShaper.curve = curve;
+
+        // ========== 7. REVERB (impulso coloreado - brown noise) ==========
+        reverb = audioCtx.createConvolver();
+        const impulseLength = audioCtx.sampleRate * 8;
+        const impulseBuffer = audioCtx.createBuffer(2, impulseLength, audioCtx.sampleRate);
+        
+        for (let channel = 0; channel < 2; channel++) {
+            const data = impulseBuffer.getChannelData(channel);
+            let brown = 0;
+            for (let i = 0; i < impulseLength; i++) {
+                // Brown noise
+                brown += (Math.random() * 2 - 1) * 0.02;
+                brown = Math.max(-1, Math.min(1, brown));
+                // Decaimiento exponencial
+                const envelope = Math.exp(-i / (audioCtx.sampleRate * 2.2));
+                // Shimmer sutil
+                const shimmer = Math.sin(i / audioCtx.sampleRate * 300) * 0.03;
+                data[i] = brown * envelope * 0.4 + shimmer * envelope * 0.1;
+            }
+        }
+        reverb.buffer = impulseBuffer;
+        
+        reverbGain = audioCtx.createGain();
+        reverbGain.gain.value = 0.22;
+        reverb.connect(reverbGain);
+        reverbGain.connect(lowpassFinal);
+
+        // ========== 8. 8 OSCILADORES CON MODULACIÓN ==========
+        const baseFreqs = [
+            FREQ_RE + 0.0,
+            FREQ_RE + 0.8,
+            FREQ_RE - 0.6,
+            FREQ_RE + 1.4,
+            FREQ_RE - 0.9,
+            FREQ_RE + 0.5,
+            FREQ_RE - 0.3,
+            FREQ_RE + 1.1
+        ];
+
+        const types = ['sawtooth', 'sawtooth', 'triangle', 'sine', 'sawtooth', 'triangle', 'sine', 'sawtooth'];
+
+        for (let i = 0; i < 8; i++) {
+            // Oscilador principal
+            const osc = audioCtx.createOscillator();
+            osc.type = types[i % types.length];
+            osc.frequency.value = baseFreqs[i];
+            
+            // Ganancia individual
+            const oscGain = audioCtx.createGain();
+            oscGain.gain.value = 0.04 + Math.random() * 0.03;
+
+            // Micro FM (modulación de frecuencia)
+            const fmOsc = audioCtx.createOscillator();
+            fmOsc.frequency.value = 0.5 + Math.random() * 1.5;
+            fmOsc.type = 'sine';
+            
+            const fmGain = audioCtx.createGain();
+            fmGain.gain.value = 0.8 + Math.random() * 1.2;
+            
+            fmOsc.connect(fmGain);
+            fmGain.connect(osc.frequency);
+            fmOsc.start();
+
+            // Micro AM (modulación de amplitud)
+            const amOsc = audioCtx.createOscillator();
+            amOsc.frequency.value = 0.3 + Math.random() * 0.8;
+            amOsc.type = 'sine';
+            
+            const amGain = audioCtx.createGain();
+            amGain.gain.value = 0.6 + Math.random() * 0.6;
+            amGain.connect(oscGain.gain);
+            amOsc.start();
+
+            // Micro detune (LFO lento)
+            const detuneLFO = audioCtx.createOscillator();
+            detuneLFO.frequency.value = 0.02 + Math.random() * 0.04;
+            
+            const detuneGain = audioCtx.createGain();
+            detuneGain.gain.value = 0.2 + Math.random() * 0.8;
+            
+            detuneLFO.connect(detuneGain);
+            detuneGain.connect(osc.frequency);
+            detuneLFO.start();
+
+            // Conectar
+            osc.connect(oscGain);
+            oscGain.connect(waveShaper);
+            oscGain.connect(chorus);
+            oscGain.connect(allpass1);
+            oscGain.connect(reverb);
+            oscGain.connect(delay);
+            
+            osc.start();
+            
+            osciladores.push({osc, gain: oscGain});
+            moduladores.push({fm: fmOsc, fmGain, am: amOsc, amGain, detune: detuneLFO, detuneGain});
+        }
+
+        // ========== 9. RUIDO FILTRADO ==========
+        const noiseBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 4, audioCtx.sampleRate);
+        const noiseData = noiseBuffer.getChannelData(0);
+        let brownNoise = 0;
+        for (let i = 0; i < noiseData.length; i++) {
+            brownNoise += (Math.random() * 2 - 1) * 0.01;
+            brownNoise = Math.max(-1, Math.min(1, brownNoise));
+            noiseData[i] = brownNoise * 0.3;
+        }
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = noiseBuffer;
+        noise.loop = true;
+        
+        const noiseBP = audioCtx.createBiquadFilter();
+        noiseBP.type = "bandpass";
+        noiseBP.frequency.value = 350;
+        noiseBP.Q.value = 0.4;
+        
+        const noiseGain = audioCtx.createGain();
+        noiseGain.gain.value = 0.04;
+        
+        noise.connect(noiseBP);
+        noiseBP.connect(noiseGain);
+        noiseGain.connect(waveShaper);
+        noiseGain.connect(chorus);
+        noiseGain.connect(allpass1);
+        noiseGain.connect(reverb);
+        
+        noise.start();
+
+        // ========== 10. CONEXIONES FINALES ==========
+        waveShaper.connect(chorus);
+        waveShaper.connect(allpass1);
+        waveShaper.connect(reverb);
+        waveShaper.connect(delay);
+        
+        chorus.connect(allpass1);
+        allpass2.connect(reverb);
+        allpass2.connect(delay);
 
         audioIniciado = true;
         document.getElementById('startBtn').disabled = true;
-        document.getElementById('startBtn').textContent = '✅ ACTIVO';
-        document.getElementById('estado').textContent = '🔇 mano cerrada';
+        document.getElementById('startBtn').textContent = '◈ ACTIVO ◈';
+        document.getElementById('estado').textContent = '◈ silencio ◈';
+        
+        audioLoop();
     } catch(e) {
         console.error("Error audio:", e);
     }
 }
 
-// ==================== CONTROL ====================
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
-const estadoEl = document.getElementById('estado');
-const debugEl = document.getElementById('debug');
+// ========== LOOP DE AUDIO ==========
+function audioLoop() {
+    if (!audioIniciado) return;
 
-let manoAbierta = false;
-let alturaMano = 0.5;
-let smoothAltura = 0.5;
-let smoothAbierta = false;
+    currentGain += (targetGain - currentGain) * FADE_TIME;
+    masterGain.gain.value = currentGain * 0.35;
 
-function actualizarSonido() {
-    if (!audioIniciado || !audioCtx) return;
-
-    // Suavizado para evitar saltos bruscos
-    smoothAltura += (alturaMano - smoothAltura) * 0.15;
-    if (manoAbierta) {
-        smoothAbierta = true;
-    } else {
-        // Si se cierra, se apaga SECO (instantáneo)
-        if (smoothAbierta) {
-            gain.gain.setValueAtTime(0, audioCtx.currentTime);
-            smoothAbierta = false;
-        }
-    }
-
-    // DINÁMICA: el volumen sube y baja con la altura de la mano
-    // Mano arriba = piano, mano abajo = forte
-    let volumen = 0;
-    if (smoothAbierta) {
-        // Mapeo: altura 0 (arriba) = 0.05, altura 1 (abajo) = 0.35
-        volumen = 0.05 + (1 - smoothAltura) * 0.30;
-        gain.gain.setTargetAtTime(volumen, audioCtx.currentTime, 0.03);
-    }
-
-    // TEXTURA: filtro y modulación según altura
-    // Mano arriba = filtro bajo (oscuro), mano abajo = filtro alto (brillante)
-    const freqFiltro = 150 + (1 - smoothAltura) * 2000;
-    filter.frequency.setTargetAtTime(freqFiltro, audioCtx.currentTime, 0.02);
-
-    // Modulación de frecuencia para textura
-    const desvio = (0.5 - smoothAltura) * 12;
-    osc1.frequency.setTargetAtTime(FREQ_RE + desvio, audioCtx.currentTime, 0.02);
-    osc2.frequency.setTargetAtTime(FREQ_RE * 2 + desvio * 1.5, audioCtx.currentTime, 0.02);
-    osc3.frequency.setTargetAtTime(FREQ_RE * 3 + desvio * 2, audioCtx.currentTime, 0.02);
-
-    // Q del filtro (resonancia) también varía con la altura
-    filter.Q.setTargetAtTime(1.2 + (1 - smoothAltura) * 1.5, audioCtx.currentTime, 0.02);
+    currentBrightness += (targetBrightness - currentBrightness) * TIMBRE_TIME;
+    
+    // Brillo controla:
+    // - Filtro final
+    const freqFinal = 600 + currentBrightness * 3500;
+    lowpassFinal.frequency.setValueAtTime(freqFinal, audioCtx.currentTime);
+    
+    // - Allpass filters
+    allpass1.frequency.setValueAtTime(600 + currentBrightness * 1200, audioCtx.currentTime);
+    allpass2.frequency.setValueAtTime(1200 + currentBrightness * 1600, audioCtx.currentTime);
+    
+    // - Reverb wet
+    reverbGain.gain.value = 0.15 + currentBrightness * 0.20;
 
     // UI
-    if (smoothAbierta) {
-        const db = Math.round((volumen / 0.35) * 100);
-        estadoEl.textContent = `🔊 sonando · dinámica ${db}% · filtro ${Math.round(freqFiltro)} Hz`;
-        estadoEl.style.color = '#6cf';
+    const percent = Math.round(currentGain / 0.2 * 100);
+    if (currentGain > 0.001) {
+        document.getElementById('estado').textContent = `◈ sonando · ${percent}% · ${Math.round(freqFinal)}Hz ◈`;
+        document.getElementById('estado').style.color = '#6cf';
     } else {
-        estadoEl.textContent = '🔇 silencio (mano cerrada)';
-        estadoEl.style.color = '#555';
+        document.getElementById('estado').textContent = '◈ silencio ◈';
+        document.getElementById('estado').style.color = '#555';
     }
+
+    requestAnimationFrame(audioLoop);
 }
 
 // ==================== MEDIAPIPE ====================
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const debugEl = document.getElementById('debug');
+
+function calcularApertura(landmarks) {
+    const thumbTip = landmarks[4];
+    const indexTip = landmarks[8];
+    return Math.hypot(
+        thumbTip.x - indexTip.x,
+        thumbTip.y - indexTip.y,
+        thumbTip.z - indexTip.z
+    );
+}
+
 function onResults(results) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
@@ -219,53 +419,32 @@ function onResults(results) {
         drawConnectors(ctx, landmarks);
         drawLandmarks(ctx, landmarks);
 
-        // Detectar mano abierta/cerrada
-        const fingerTips = [8, 12, 16, 20];
-        const mcp = [5, 9, 13, 17];
-        let sumaDistancias = 0;
-        for (let i = 0; i < fingerTips.length; i++) {
-            const tip = landmarks[fingerTips[i]];
-            const base = landmarks[mcp[i]];
-            const dist = Math.hypot(tip.x - base.x, tip.y - base.y, tip.z - base.z);
-            sumaDistancias += dist;
-        }
-        const promedio = sumaDistancias / fingerTips.length;
-        
-        // Umbral para abrir/cerrar
-        const umbral = 0.055;
-        manoAbierta = promedio > umbral;
+        const apertura = calcularApertura(landmarks);
+        const rawGain = Math.max(0, (apertura - 0.02) / 0.13);
+        targetGain = 0.005 + Math.pow(rawGain, 2.0) * 0.25;
 
-        // Altura de la mano (centro del bounding box)
         const minY = Math.min(...landmarks.map(l => l.y));
         const maxY = Math.max(...landmarks.map(l => l.y));
-        alturaMano = Math.max(0, Math.min(1, (minY + maxY) / 2));
+        const altura = Math.max(0, Math.min(1, (minY + maxY) / 2));
+        targetBrightness = 1 - altura;
 
-        debugEl.textContent = `abierta: ${manoAbierta} · altura: ${(alturaMano * 100).toFixed(0)}%`;
-
-        actualizarSonido();
+        debugEl.textContent = `apertura: ${(apertura*100).toFixed(0)}% · altura: ${(altura*100).toFixed(0)}%`;
     } else {
-        // No hay mano → silencio SECO
-        if (audioIniciado) {
-            gain.gain.setValueAtTime(0, audioCtx.currentTime);
-            estadoEl.textContent = '🚫 mano no detectada';
-            estadoEl.style.color = '#333';
-            smoothAbierta = false;
-        }
+        targetGain = 0;
+        targetBrightness = 0.5;
         debugEl.textContent = 'mano: ---';
     }
 }
 
-// Dibujo de MediaPipe
+// ========== DIBUJO ==========
 function drawConnectors(ctx, landmarks) {
     const connections = [
         [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
         [0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],
         [0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]
     ];
-    ctx.strokeStyle = '#6cf';
-    ctx.lineWidth = 2;
-    ctx.shadowColor = '#6cf';
-    ctx.shadowBlur = 10;
+    ctx.strokeStyle = 'rgba(100, 200, 255, 0.2)';
+    ctx.lineWidth = 1.5;
     connections.forEach(([i, j]) => {
         const p1 = landmarks[i];
         const p2 = landmarks[j];
@@ -274,22 +453,18 @@ function drawConnectors(ctx, landmarks) {
         ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
         ctx.stroke();
     });
-    ctx.shadowBlur = 0;
 }
 
 function drawLandmarks(ctx, landmarks) {
-    ctx.fillStyle = '#8cf';
-    ctx.shadowColor = '#8cf';
-    ctx.shadowBlur = 15;
+    ctx.fillStyle = 'rgba(100, 200, 255, 0.3)';
     landmarks.forEach(p => {
         ctx.beginPath();
-        ctx.arc(p.x * canvas.width, p.y * canvas.height, 5, 0, 2 * Math.PI);
+        ctx.arc(p.x * canvas.width, p.y * canvas.height, 3, 0, 2 * Math.PI);
         ctx.fill();
     });
-    ctx.shadowBlur = 0;
 }
 
-// ==================== CÁMARA ====================
+// ========== CÁMARA ==========
 const hands = new Hands({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
 });
@@ -309,16 +484,15 @@ const camera = new Camera(video, {
     height: 480
 });
 
-// ==================== BOTÓN ====================
+// ========== BOTÓN ==========
 document.getElementById('startBtn').addEventListener('click', async () => {
     try {
         await camera.start();
         iniciarAudio();
         canvas.width = video.videoWidth || 640;
         canvas.height = video.videoHeight || 480;
-        document.getElementById('startBtn').textContent = '📷 CÁMARA ACTIVA';
+        document.getElementById('startBtn').textContent = '◈ CÁMARA ACTIVA ◈';
         document.getElementById('startBtn').disabled = true;
-        document.getElementById('estado').textContent = '🔇 mano cerrada';
     } catch(e) {
         alert('Permite acceso a la cámara');
     }
