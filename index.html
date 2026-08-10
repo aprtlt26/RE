@@ -76,6 +76,14 @@
             color: #333;
             margin-top: 5px;
         }
+        #warning {
+            text-align: center;
+            font-size: 14px;
+            color: #f44;
+            margin-top: 5px;
+            font-weight: bold;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -85,9 +93,10 @@
     <canvas id="canvas"></canvas>
     
     <button id="startBtn">📷 INICIAR</button>
-    <div id="info"><span>✋ abrir</span> = sonido · <span>⬆⬇ altura</span> = textura y dinámica</div>
+    <div id="info"><span>✋ abrir</span> = sonido · <span>⬆⬇ altura</span> = volumen y textura</div>
     <div id="estado">⚪ esperando...</div>
     <div id="debug">mano: ---</div>
+    <div id="warning">⚠️ MANO CERRADA → SILENCIO</div>
 </div>
 
 <!-- MediaPipe -->
@@ -98,7 +107,7 @@
 
 <script>
 // ==================== AUDIO ====================
-let audioCtx, osc1, osc2, osc3, filter, gain, analizador;
+let audioCtx, osc1, osc2, osc3, filter, gain;
 let audioIniciado = false;
 const FREQ_RE = 293.66;
 
@@ -154,38 +163,36 @@ const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const estadoEl = document.getElementById('estado');
 const debugEl = document.getElementById('debug');
+const warningEl = document.getElementById('warning');
 
 let manoAbierta = false;
 let alturaMano = 0.5;
 let smoothAltura = 0.5;
-let smoothAbierta = false;
 
 function actualizarSonido() {
     if (!audioIniciado || !audioCtx) return;
 
     // Suavizado para evitar saltos bruscos
     smoothAltura += (alturaMano - smoothAltura) * 0.15;
-    if (manoAbierta) {
-        smoothAbierta = true;
-    } else {
-        // Si se cierra, se apaga SECO (instantáneo)
-        if (smoothAbierta) {
-            gain.gain.setValueAtTime(0, audioCtx.currentTime);
-            smoothAbierta = false;
-        }
+
+    // ⚠️ CRUCIAL: Si la mano está CERRADA → SILENCIO SECO (setValueAtTime 0)
+    if (!manoAbierta) {
+        gain.gain.setValueAtTime(0, audioCtx.currentTime);
+        estadoEl.textContent = '🔇 silencio (mano cerrada)';
+        estadoEl.style.color = '#555';
+        warningEl.style.display = 'block';
+        return;
     }
 
-    // DINÁMICA: el volumen sube y baja con la altura de la mano
-    // Mano arriba = piano, mano abajo = forte
-    let volumen = 0;
-    if (smoothAbierta) {
-        // Mapeo: altura 0 (arriba) = 0.05, altura 1 (abajo) = 0.35
-        volumen = 0.05 + (1 - smoothAltura) * 0.30;
-        gain.gain.setTargetAtTime(volumen, audioCtx.currentTime, 0.03);
-    }
+    // Si la mano está ABIERTA → volumen controlado por altura
+    warningEl.style.display = 'none';
+    
+    // DINÁMICA: Mano arriba = piano, mano abajo = forte
+    // altura 0 (arriba) = 0.05, altura 1 (abajo) = 0.35
+    const volumen = 0.05 + (1 - smoothAltura) * 0.30;
+    gain.gain.setTargetAtTime(volumen, audioCtx.currentTime, 0.03);
 
-    // TEXTURA: filtro y modulación según altura
-    // Mano arriba = filtro bajo (oscuro), mano abajo = filtro alto (brillante)
+    // TEXTURA: filtro según altura
     const freqFiltro = 150 + (1 - smoothAltura) * 2000;
     filter.frequency.setTargetAtTime(freqFiltro, audioCtx.currentTime, 0.02);
 
@@ -195,18 +202,13 @@ function actualizarSonido() {
     osc2.frequency.setTargetAtTime(FREQ_RE * 2 + desvio * 1.5, audioCtx.currentTime, 0.02);
     osc3.frequency.setTargetAtTime(FREQ_RE * 3 + desvio * 2, audioCtx.currentTime, 0.02);
 
-    // Q del filtro (resonancia) también varía con la altura
+    // Q del filtro
     filter.Q.setTargetAtTime(1.2 + (1 - smoothAltura) * 1.5, audioCtx.currentTime, 0.02);
 
     // UI
-    if (smoothAbierta) {
-        const db = Math.round((volumen / 0.35) * 100);
-        estadoEl.textContent = `🔊 sonando · dinámica ${db}% · filtro ${Math.round(freqFiltro)} Hz`;
-        estadoEl.style.color = '#6cf';
-    } else {
-        estadoEl.textContent = '🔇 silencio (mano cerrada)';
-        estadoEl.style.color = '#555';
-    }
+    const db = Math.round((volumen / 0.35) * 100);
+    estadoEl.textContent = `🔊 sonando · ${db}% · filtro ${Math.round(freqFiltro)} Hz`;
+    estadoEl.style.color = '#6cf';
 }
 
 // ==================== MEDIAPIPE ====================
@@ -219,7 +221,7 @@ function onResults(results) {
         drawConnectors(ctx, landmarks);
         drawLandmarks(ctx, landmarks);
 
-        // Detectar mano abierta/cerrada
+        // Detectar mano abierta/cerrada (distancia dedos-palma)
         const fingerTips = [8, 12, 16, 20];
         const mcp = [5, 9, 13, 17];
         let sumaDistancias = 0;
@@ -235,7 +237,7 @@ function onResults(results) {
         const umbral = 0.055;
         manoAbierta = promedio > umbral;
 
-        // Altura de la mano (centro del bounding box)
+        // Altura de la mano
         const minY = Math.min(...landmarks.map(l => l.y));
         const maxY = Math.max(...landmarks.map(l => l.y));
         alturaMano = Math.max(0, Math.min(1, (minY + maxY) / 2));
@@ -244,12 +246,12 @@ function onResults(results) {
 
         actualizarSonido();
     } else {
-        // No hay mano → silencio SECO
+        // No hay mano → SILENCIO SECO
         if (audioIniciado) {
             gain.gain.setValueAtTime(0, audioCtx.currentTime);
             estadoEl.textContent = '🚫 mano no detectada';
             estadoEl.style.color = '#333';
-            smoothAbierta = false;
+            warningEl.style.display = 'block';
         }
         debugEl.textContent = 'mano: ---';
     }
@@ -319,6 +321,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
         document.getElementById('startBtn').textContent = '📷 CÁMARA ACTIVA';
         document.getElementById('startBtn').disabled = true;
         document.getElementById('estado').textContent = '🔇 mano cerrada';
+        warningEl.style.display = 'block';
     } catch(e) {
         alert('Permite acceso a la cámara');
     }
