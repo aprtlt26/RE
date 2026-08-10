@@ -79,6 +79,13 @@
             color: #222;
             margin-top: 5px;
         }
+        #warning {
+            text-align: center;
+            font-size: 12px;
+            color: #f44;
+            margin-top: 5px;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -88,9 +95,10 @@
     <canvas id="canvas"></canvas>
     
     <button id="startBtn">◈ INICIAR · MAZACOTE ◈</button>
-    <div id="info"><span>✋ pulgar-índice</span> = intensidad · <span>⬆⬇</span> = brillo y batidos</div>
+    <div id="info"><span>✋ pulgar-índice</span> = intensidad · <span>⬆⬇</span> = brillo</div>
     <div id="estado">◈ esperando... ◈</div>
     <div id="debug">mano: ---</div>
+    <div id="warning">⚠️ MANO CERRADA → SILENCIO</div>
 </div>
 
 <!-- MediaPipe -->
@@ -106,21 +114,21 @@ let audioIniciado = false;
 const FREQ_RE = 293.66;
 
 // ========== PARÁMETROS MAZACOTE ==========
-const FADE_TIME = 0.003;     // Fades de 4-8 segundos
-const TIMBRE_TIME = 0.008;   // Cambios de timbre muy lentos
+const FADE_LENTO = 0.003;    // 4-8 segundos (estética Mazacote)
+const FADE_RAPIDO = 0.03;    // 0.5 segundos (cuando se cierra la mano)
+const TIMBRE_TIME = 0.008;
 
-// Valores suavizados (integradores)
+// Valores suavizados
 let currentGain = 0;
 let targetGain = 0;
 let currentBrightness = 0.5;
 let targetBrightness = 0.5;
 let currentDetune = 0;
 let targetDetune = 0;
+let fadeSpeed = FADE_LENTO;
 
-// Nodos principales
+// Nodos
 let masterGain, lowpassFinal;
-
-// Osciladores
 let osciladores = [];
 
 function iniciarAudio() {
@@ -128,30 +136,21 @@ function iniciarAudio() {
     try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         
-        // ========== MASTER ==========
         masterGain = audioCtx.createGain();
         masterGain.gain.value = 0;
         masterGain.connect(audioCtx.destination);
 
-        // ========== LOWPASS FINAL ==========
         lowpassFinal = audioCtx.createBiquadFilter();
         lowpassFinal.type = "lowpass";
         lowpassFinal.frequency.value = 2500;
         lowpassFinal.Q.value = 0.7;
         lowpassFinal.connect(masterGain);
 
-        // ========== 8 OSCILADORES con modulación ==========
+        // 8 osciladores
         const freqs = [
-            FREQ_RE + 0.0,
-            FREQ_RE + 0.6,
-            FREQ_RE - 0.4,
-            FREQ_RE + 1.2,
-            FREQ_RE - 0.8,
-            FREQ_RE + 0.9,
-            FREQ_RE - 0.6,
-            FREQ_RE + 0.3
+            FREQ_RE + 0.0, FREQ_RE + 0.6, FREQ_RE - 0.4, FREQ_RE + 1.2,
+            FREQ_RE - 0.8, FREQ_RE + 0.9, FREQ_RE - 0.6, FREQ_RE + 0.3
         ];
-
         const types = ['sawtooth', 'sawtooth', 'triangle', 'sine', 'sawtooth', 'triangle', 'sine', 'sawtooth'];
 
         for (let i = 0; i < 8; i++) {
@@ -159,7 +158,6 @@ function iniciarAudio() {
             osc.type = types[i % types.length];
             osc.frequency.value = freqs[i];
             
-            // Ganancia individual
             const oscGain = audioCtx.createGain();
             oscGain.gain.value = 0.04 + Math.random() * 0.03;
             
@@ -177,11 +175,10 @@ function iniciarAudio() {
             });
         }
 
-        // ========== REVERB (impulso coloreado) ==========
+        // Reverb
         const reverb = audioCtx.createConvolver();
         const impulseLength = audioCtx.sampleRate * 10;
         const impulseBuffer = audioCtx.createBuffer(2, impulseLength, audioCtx.sampleRate);
-        
         for (let channel = 0; channel < 2; channel++) {
             const data = impulseBuffer.getChannelData(channel);
             let brown = 0;
@@ -194,21 +191,17 @@ function iniciarAudio() {
             }
         }
         reverb.buffer = impulseBuffer;
-        
         const reverbGain = audioCtx.createGain();
         reverbGain.gain.value = 0.22;
-        
-        // Conectar todos los osciladores a la reverb
         for (let i = 0; i < osciladores.length; i++) {
             osciladores[i].gain.connect(reverb);
         }
         reverb.connect(reverbGain);
         reverbGain.connect(masterGain);
 
-        // ========== CHORUS LENTO ==========
+        // Chorus
         const chorus = audioCtx.createDelay(0.05);
         chorus.delayTime.value = 0.018;
-        
         const chorusLFO = audioCtx.createOscillator();
         chorusLFO.frequency.value = 0.04;
         const chorusDepth = audioCtx.createGain();
@@ -216,25 +209,20 @@ function iniciarAudio() {
         chorusLFO.connect(chorusDepth);
         chorusDepth.connect(chorus.delayTime);
         chorusLFO.start();
-        
-        // Conectar osciladores al chorus
         for (let i = 0; i < osciladores.length; i++) {
             osciladores[i].gain.connect(chorus);
         }
         chorus.connect(masterGain);
 
-        // ========== LFOs para cada oscilador ==========
+        // LFOs
         for (let i = 0; i < osciladores.length; i++) {
             const lfo = audioCtx.createOscillator();
             lfo.frequency.value = 0.015 + Math.random() * 0.025;
-            
             const lfoGain = audioCtx.createGain();
             lfoGain.gain.value = 0.3 + Math.random() * 0.5;
-            
             lfo.connect(lfoGain);
             lfoGain.connect(osciladores[i].osc.frequency);
             lfo.start();
-            
             osciladores[i].lfo = lfo;
             osciladores[i].lfoGain = lfoGain;
         }
@@ -250,41 +238,51 @@ function iniciarAudio() {
     }
 }
 
-// ========== LOOP DE AUDIO (integradores lentos) ==========
+// ========== LOOP DE AUDIO ==========
 function audioLoop() {
     if (!audioIniciado) return;
 
-    // 1. AMPLITUD: integrador muy lento (fade de 4-8 segundos)
-    currentGain += (targetGain - currentGain) * FADE_TIME;
+    // ⚠️ CRUCIAL: velocidad de fade según apertura
+    // Si la mano está cerrada → fade rápido (0.5 segundos)
+    // Si está abierta → fade lento (estética Mazacote)
+    const fadeActual = (targetGain < 0.001) ? FADE_RAPIDO : FADE_LENTO;
+
+    // AMPLITUD
+    currentGain += (targetGain - currentGain) * fadeActual;
     masterGain.gain.value = currentGain * 0.35;
 
-    // 2. BRILLO: integrador lento
+    // BRILLO
     currentBrightness += (targetBrightness - currentBrightness) * TIMBRE_TIME;
     const freqFiltro = 300 + currentBrightness * 2500;
     lowpassFinal.frequency.setValueAtTime(freqFiltro, audioCtx.currentTime);
 
-    // 3. DESAFINACIÓN (batidos): integrador lentísimo
+    // DESAFINACIÓN
     currentDetune += (targetDetune - currentDetune) * (TIMBRE_TIME * 0.5);
-    // Aplicar desafinación a cada oscilador
     for (let i = 0; i < osciladores.length; i++) {
-        const desvio = (currentDetune - 0.5) * 0.8; // menos de un semitono
+        const desvio = (currentDetune - 0.5) * 0.8;
         osciladores[i].osc.frequency.setValueAtTime(
             osciladores[i].baseFreq + desvio,
             audioCtx.currentTime
         );
     }
 
-    // 4. RESONANCIA del filtro
     lowpassFinal.Q.setValueAtTime(0.5 + currentBrightness * 0.8, audioCtx.currentTime);
 
     // UI
+    const warning = document.getElementById('warning');
     const percent = Math.round(currentGain / 0.2 * 100);
     if (currentGain > 0.001) {
         document.getElementById('estado').textContent = `◈ sonando · ${percent}% · ${Math.round(freqFiltro)}Hz ◈`;
         document.getElementById('estado').style.color = '#6cf';
+        warning.style.display = 'none';
     } else {
         document.getElementById('estado').textContent = '◈ silencio ◈';
         document.getElementById('estado').style.color = '#555';
+        if (targetGain < 0.001) {
+            warning.style.display = 'block';
+        } else {
+            warning.style.display = 'none';
+        }
     }
 
     requestAnimationFrame(audioLoop);
@@ -315,27 +313,29 @@ function onResults(results) {
         drawConnectors(ctx, landmarks);
         drawLandmarks(ctx, landmarks);
 
-        // ========== CONTROL CONTINUO ==========
-        // 1. APERTURA: distancia pulgar-índice → intensidad (NUNCA se apaga bruscamente)
         const apertura = calcularApertura(landmarks);
-        // Mapeo: apertura 0.02-0.15 → targetGain 0-0.25
-        const rawGain = Math.max(0, (apertura - 0.02) / 0.13);
-        // Curva exponencial para dinámicas suaves
-        targetGain = 0.005 + Math.pow(rawGain, 2.5) * 0.25;
-        // NUNCA se apaga de golpe: el integrador se encarga del fade
+        
+        // ⚠️ CRUCIAL: mapeo de apertura a targetGain
+        // Si la apertura es muy pequeña → targetGain = 0 (se apaga)
+        const umbralApertura = 0.025;
+        if (apertura < umbralApertura) {
+            // Mano cerrada → silencio
+            targetGain = 0;
+        } else {
+            // Mano abierta → ganancia continua
+            const rawGain = Math.max(0, (apertura - umbralApertura) / 0.12);
+            targetGain = 0.005 + Math.pow(rawGain, 2.5) * 0.25;
+        }
 
-        // 2. ALTURA: centro de la mano → brillo y desafinación
         const minY = Math.min(...landmarks.map(l => l.y));
         const maxY = Math.max(...landmarks.map(l => l.y));
         const altura = Math.max(0, Math.min(1, (minY + maxY) / 2));
-        // Mano arriba = oscuro, mano abajo = brillante
         targetBrightness = 1 - altura;
-        // Desafinación: más batidos cuando la mano está abajo
         targetDetune = altura;
 
         debugEl.textContent = `apertura: ${(apertura*100).toFixed(0)}% · altura: ${(altura*100).toFixed(0)}%`;
     } else {
-        // NO HAY MANO → targetGain = 0 (pero el integrador lo desvanece en segundos)
+        // No hay mano → silencio RÁPIDO
         targetGain = 0;
         targetBrightness = 0.5;
         targetDetune = 0.5;
