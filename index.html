@@ -121,43 +121,41 @@ let alturaMano = 0.5;
 let smoothAltura = 0.5;
 
 // ============================================================
-// 2. MOTOR SONORO (SOLO CAMBIO EL SONIDO, NO LA LÓGICA)
+// 2. MOTOR SONORO
 // ============================================================
 let audioCtx;
 let audioIniciado = false;
 const FREQ_RE = 293.66;
 
-let gain;           // Control de volumen (lo mismo que antes)
-let filter;         // Filtro para textura (lo mismo que antes)
-let osc1, osc2, osc3; // 3 osciladores como en el original
+let gain;
+let filter;
+let osc1, osc2, osc3;
+
+// Control de estado para evitar fades múltiples
+let estabaAbierta = false;
 
 function iniciarAudio() {
     if (audioIniciado) return;
     try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         
-        // ========== GANANCIA (VOLUMEN) - IGUAL QUE ANTES ==========
         gain = audioCtx.createGain();
         gain.gain.value = 0;
         gain.connect(audioCtx.destination);
 
-        // ========== FILTRO - IGUAL QUE ANTES ==========
         filter = audioCtx.createBiquadFilter();
         filter.type = "lowpass";
         filter.frequency.value = 1000;
         filter.Q.value = 1.5;
         filter.connect(gain);
 
-        // ========== 3 OSCILADORES PERO CON PERIODIC WAVE (ESPECTRO RICO) ==========
-        // Crear un espectro complejo con 32 armónicos
+        // Espectro complejo
         function crearEspectro() {
             const real = new Float32Array(32);
             const imag = new Float32Array(32);
             for (let i = 0; i < 32; i++) {
                 const n = i + 1;
-                // Decaimiento tipo "campana" o "cuerda"
                 let amp = Math.exp(-n * 0.12) * (0.7 + Math.random() * 0.6);
-                // Algunos armónicos más fuertes
                 if (n === 3 || n === 5 || n === 7 || n === 11) amp *= 1.6;
                 if (n === 2 || n === 4 || n === 8) amp *= 0.6;
                 real[i] = amp * 0.5;
@@ -169,20 +167,17 @@ function iniciarAudio() {
         const espectro = crearEspectro();
         const wave = audioCtx.createPeriodicWave(espectro, new Float32Array(32));
 
-        // Oscilador 1 (fundamental)
         osc1 = audioCtx.createOscillator();
         osc1.setPeriodicWave(wave);
         osc1.frequency.value = FREQ_RE;
         osc1.connect(filter);
 
-        // Oscilador 2 (quinta justa)
         const wave2 = audioCtx.createPeriodicWave(espectro, new Float32Array(32));
         osc2 = audioCtx.createOscillator();
         osc2.setPeriodicWave(wave2);
         osc2.frequency.value = FREQ_RE * 1.5;
         osc2.connect(filter);
 
-        // Oscilador 3 (octava + microdesafinación)
         const wave3 = audioCtx.createPeriodicWave(espectro, new Float32Array(32));
         osc3 = audioCtx.createOscillator();
         osc3.setPeriodicWave(wave3);
@@ -193,7 +188,7 @@ function iniciarAudio() {
         osc2.start();
         osc3.start();
 
-        // ========== REVERB SUAVE ==========
+        // Reverb suave
         const reverb = audioCtx.createConvolver();
         const impulseLength = audioCtx.sampleRate * 6;
         const impulseBuffer = audioCtx.createBuffer(2, impulseLength, audioCtx.sampleRate);
@@ -226,44 +221,41 @@ function iniciarAudio() {
     }
 }
 
-// ========== LOOP DE AUDIO (IGUAL QUE EL ORIGINAL) ==========
+// ========== LOOP DE AUDIO ==========
 function audioLoop() {
     if (!audioIniciado) return;
 
-    // Suavizado (igual que antes)
     smoothAltura += (alturaMano - smoothAltura) * 0.15;
 
-    // ========== SI MANO CERRADA → SILENCIO SECO (igual que antes) ==========
+    // ========== CIERRE DE MANO: FADE SUAVE (NO SECO) ==========
     if (!manoAbierta) {
-        gain.gain.setValueAtTime(0, audioCtx.currentTime);
+        // ⚠️ CAMBIO IMPORTANTE: setTargetAtTime en vez de setValueAtTime
+        // Time constant 0.05 = ~0.2 segundos de fade
+        gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
         estadoEl.textContent = '🔇 silencio (mano cerrada)';
         estadoEl.style.color = '#555';
         warningEl.style.display = 'block';
+        estabaAbierta = false;
         requestAnimationFrame(audioLoop);
         return;
     }
 
     warningEl.style.display = 'none';
 
-    // ========== MANO ABIERTA → VOLUMEN CONTROLADO POR ALTURA (igual que antes) ==========
-    // altura 0 (arriba) = 0.05, altura 1 (abajo) = 0.35
+    // ========== MANO ABIERTA ==========
     const volumen = 0.05 + (1 - smoothAltura) * 0.30;
     gain.gain.setTargetAtTime(volumen, audioCtx.currentTime, 0.03);
 
-    // ========== TEXTURA: FILTRO Y DESAFINACIÓN (igual que antes) ==========
     const freqFiltro = 150 + (1 - smoothAltura) * 2000;
     filter.frequency.setTargetAtTime(freqFiltro, audioCtx.currentTime, 0.02);
 
-    // Desafinación sutil para batidos
-    const desvio = (0.5 - smoothAltura) * 2.5; // menos de un semitono
+    const desvio = (0.5 - smoothAltura) * 2.5;
     osc1.frequency.setTargetAtTime(FREQ_RE + desvio, audioCtx.currentTime, 0.02);
     osc2.frequency.setTargetAtTime(FREQ_RE * 1.5 + desvio * 0.7, audioCtx.currentTime, 0.02);
     osc3.frequency.setTargetAtTime(FREQ_RE * 2 + desvio * 0.5, audioCtx.currentTime, 0.02);
 
-    // Q del filtro
     filter.Q.setTargetAtTime(1.2 + (1 - smoothAltura) * 1.5, audioCtx.currentTime, 0.02);
 
-    // UI
     const db = Math.round((volumen / 0.35) * 100);
     estadoEl.textContent = `🔊 sonando · ${db}% · ${Math.round(freqFiltro)} Hz`;
     estadoEl.style.color = '#6cf';
@@ -272,7 +264,7 @@ function audioLoop() {
 }
 
 // ============================================================
-// 3. MEDIAPIPE (NO TOCAR - ESTÁ FUNCIONANDO)
+// 3. MEDIAPIPE (NO TOCAR)
 // ============================================================
 function onResults(results) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -283,7 +275,6 @@ function onResults(results) {
         drawConnectors(ctx, landmarks);
         drawLandmarks(ctx, landmarks);
 
-        // Detectar mano abierta/cerrada (igual que antes)
         const fingerTips = [8, 12, 16, 20];
         const mcp = [5, 9, 13, 17];
         let sumaDistancias = 0;
@@ -297,16 +288,14 @@ function onResults(results) {
         const umbral = 0.055;
         manoAbierta = promedio > umbral;
 
-        // Altura de la mano (igual que antes)
         const minY = Math.min(...landmarks.map(l => l.y));
         const maxY = Math.max(...landmarks.map(l => l.y));
         alturaMano = Math.max(0, Math.min(1, (minY + maxY) / 2));
 
         debugEl.textContent = `abierta: ${manoAbierta} · altura: ${(alturaMano * 100).toFixed(0)}%`;
     } else {
-        // No hay mano → silencio SECO (igual que antes)
         if (audioIniciado) {
-            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
             estadoEl.textContent = '🚫 mano no detectada';
             estadoEl.style.color = '#333';
             warningEl.style.display = 'block';
@@ -315,7 +304,6 @@ function onResults(results) {
     }
 }
 
-// Dibujo de MediaPipe (igual que antes)
 function drawConnectors(ctx, landmarks) {
     const connections = [
         [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
@@ -350,7 +338,7 @@ function drawLandmarks(ctx, landmarks) {
 }
 
 // ============================================================
-// 4. CÁMARA Y BOTÓN (NO TOCAR)
+// 4. CÁMARA Y BOTÓN
 // ============================================================
 const hands = new Hands({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
