@@ -96,7 +96,7 @@
     <div id="info"><span>✋ abrir</span> = sonido · <span>⬆⬇ altura</span> = volumen y textura</div>
     <div id="estado">⚪ esperando...</div>
     <div id="debug">mano: ---</div>
-    <div id="warning">⚠️ MANO CERRADA → SILENCIO</div>
+    <div id="warning">⚠️ MANO CERRADA → SUSTAIN + FADE</div>
 </div>
 
 <!-- MediaPipe -->
@@ -107,7 +107,7 @@
 
 <script>
 // ============================================================
-// 1. MOTOR DE MANO (NO TOCAR - ESTÁ FUNCIONANDO)
+// 1. MOTOR DE MANO (NO TOCAR)
 // ============================================================
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
@@ -121,7 +121,7 @@ let alturaMano = 0.5;
 let smoothAltura = 0.5;
 
 // ============================================================
-// 2. MOTOR SONORO
+// 2. MOTOR SONORO CON SUSTAIN
 // ============================================================
 let audioCtx;
 let audioIniciado = false;
@@ -131,8 +131,11 @@ let gain;
 let filter;
 let osc1, osc2, osc3;
 
-// Control de estado para evitar fades múltiples
-let estabaAbierta = false;
+// Estado de la envolvente
+let sustainActivo = false;
+let tiempoSustain = 0;
+const SUSTAIN_DURACION = 1.5; // segundos que se mantiene antes de apagarse
+const VOLUMEN_SUSTAIN = 0.02;  // volumen durante el sustain (muy bajo)
 
 function iniciarAudio() {
     if (audioIniciado) return;
@@ -188,7 +191,7 @@ function iniciarAudio() {
         osc2.start();
         osc3.start();
 
-        // Reverb suave
+        // Reverb
         const reverb = audioCtx.createConvolver();
         const impulseLength = audioCtx.sampleRate * 6;
         const impulseBuffer = audioCtx.createBuffer(2, impulseLength, audioCtx.sampleRate);
@@ -221,28 +224,51 @@ function iniciarAudio() {
     }
 }
 
-// ========== LOOP DE AUDIO ==========
+// ========== LOOP DE AUDIO CON SUSTAIN ==========
 function audioLoop() {
     if (!audioIniciado) return;
 
     smoothAltura += (alturaMano - smoothAltura) * 0.15;
 
-    // ========== CIERRE DE MANO: FADE SUAVE (NO SECO) ==========
+    // ========== CIERRE DE MANO: SUSTAIN + FADE ==========
     if (!manoAbierta) {
-        // ⚠️ CAMBIO IMPORTANTE: setTargetAtTime en vez de setValueAtTime
-        // Time constant 0.05 = ~0.2 segundos de fade
-        gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
-        estadoEl.textContent = '🔇 silencio (mano cerrada)';
-        estadoEl.style.color = '#555';
-        warningEl.style.display = 'block';
-        estabaAbierta = false;
+        if (!sustainActivo) {
+            // Primera vez que se cierra → activar sustain
+            sustainActivo = true;
+            tiempoSustain = 0;
+            warningEl.style.display = 'block';
+        }
+
+        // Incrementar tiempo de sustain
+        tiempoSustain += 1/60; // ~60fps
+
+        if (tiempoSustain < SUSTAIN_DURACION) {
+            // Fase de SUSTAIN: volumen bajo pero presente
+            const sustainVol = VOLUMEN_SUSTAIN * (1 - tiempoSustain / SUSTAIN_DURACION * 0.5);
+            gain.gain.setTargetAtTime(sustainVol, audioCtx.currentTime, 0.02);
+            estadoEl.textContent = `🔊 sustain ${Math.round((1 - tiempoSustain/SUSTAIN_DURACION)*100)}%`;
+            estadoEl.style.color = '#a84';
+        } else {
+            // Fase de RELEASE: fade lento a 0
+            gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+            estadoEl.textContent = '🔇 fade out';
+            estadoEl.style.color = '#555';
+        }
+
         requestAnimationFrame(audioLoop);
         return;
     }
 
+    // ========== MANO ABIERTA: RESETEAR SUSTAIN ==========
+    if (sustainActivo) {
+        sustainActivo = false;
+        tiempoSustain = 0;
+        warningEl.style.display = 'none';
+    }
+
     warningEl.style.display = 'none';
 
-    // ========== MANO ABIERTA ==========
+    // Volumen normal por altura
     const volumen = 0.05 + (1 - smoothAltura) * 0.30;
     gain.gain.setTargetAtTime(volumen, audioCtx.currentTime, 0.03);
 
